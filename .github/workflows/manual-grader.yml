@@ -1,0 +1,247 @@
+# .github/workflows/manual-grader.yml
+name: "👉 Click here to run grader"
+run-name: "Autograder Run"
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.actor }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  autograder:
+    name: Grade All Problems
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    
+    steps:
+      - name: Checkout Student Code
+        uses: actions/checkout@v4
+
+      # ==========================================
+      # 1. SETUP ENVIRONMENT & DETECT LANGUAGE
+      # ==========================================
+      - name: Setup Environment
+        id: setup
+        run: |
+          PY_FILE=$(find . -iname "*.py" | head -1)
+          JL_FILE=$(find . -iname "*.jl" | head -1)
+          M_FILE=$(find . -iname "*.m" | head -1)
+          IPYNB_FILE=$(find . -iname "*.ipynb" | head -1)
+
+          if [ -n "$PY_FILE" ]; then
+            echo "lang=py" >> $GITHUB_OUTPUT
+            pip install numpy
+          elif [ -n "$JL_FILE" ]; then
+            echo "lang=jl" >> $GITHUB_OUTPUT
+          elif [ -n "$M_FILE" ]; then
+            echo "lang=m" >> $GITHUB_OUTPUT
+            sudo apt-get update && sudo apt-get install -y octave
+          elif [ -n "$IPYNB_FILE" ]; then
+            echo "::error::Found a .ipynb file. Please export your code as a .py, .m, or .jl script!"
+            echo "lang=ipynb" >> $GITHUB_OUTPUT
+          else
+            echo "lang=none" >> $GITHUB_OUTPUT
+          fi
+          
+          echo "=== DETECTED LANGUAGE ==="
+          cat $GITHUB_OUTPUT
+
+      # ==========================================
+      # PROBLEM 1: GOLDEN SEARCH
+      # ==========================================
+      - name: Run Problem 1
+        continue-on-error: true
+        env:
+          W_EXP: "[2.4748, 2.3978, 2.2638, 2.0616, 1.7678, 1.3229, 0.3535, 0.0002, 0.0002, 0.0002]"
+        run: |
+          if [ "${{ steps.setup.outputs.lang }}" == "py" ]; then
+            python -c "
+          import sys, numpy as np, os
+          for r, d, f in os.walk('.'): sys.path.append(r)
+          try:
+              from golden_search import golden_search
+              xm, fm, eb = golden_search(lambda x: -(x-3)**2+10, 0, 5, 10)
+              open('p1_a', 'w').write('Pass' if abs(xm-3.0) < 0.1 else f'Wrong result: xm={xm:.2f}')
+          except Exception as e: open('p1_a', 'w').write(f'Function Error: {type(e).__name__}')
+          try:
+              import freq_response as fr
+              W_EXPECTED = np.array(eval(os.environ['W_EXP']))
+              if not hasattr(fr, 'W_max'): open('p1_b', 'w').write('Variable W_max not found')
+              elif not np.allclose(np.array(fr.W_max).flatten(), W_EXPECTED, atol=0.1): open('p1_b', 'w').write('W_max values incorrect')
+              else: open('p1_b', 'w').write('Pass')
+          except Exception as e: open('p1_b', 'w').write(f'Script Error: {type(e).__name__}')
+          "
+          elif [ "${{ steps.setup.outputs.lang }}" == "m" ]; then
+            cat << 'EOF' > grade_p1.m
+            try
+              addpath(genpath('.'));
+              [xm] = golden_search(@(x)-(x-3).^2+10,0,5,10);
+              if abs(xm-3) < 0.1; resA = 'Pass'; else; resA = ['Wrong value: ', num2str(xm)]; end
+            catch err; resA = ['Error: ', err.message]; end
+            f=fopen('p1_a','w'); fprintf(f,'%s',resA); fclose(f);
+
+            try
+              addpath(genpath('.'));
+              freq_response;
+              W_EXPECTED = str2num(getenv('W_EXP'));
+              if ~exist('W_max','var'); resB = 'W_max not found';
+              elseif ~all(abs(W_max(:)' - W_EXPECTED) < 0.1); resB = 'Values incorrect';
+              else; resB = 'Pass'; end
+            catch err; resB = ['Error: ', err.message]; end
+            f=fopen('p1_b','w'); fprintf(f,'%s',resB); fclose(f);
+          EOF
+            octave --no-gui grade_p1.m || { echo "Octave system crash" > p1_a; echo "Octave system crash" > p1_b; }
+          elif [ "${{ steps.setup.outputs.lang }}" == "jl" ]; then
+            julia -e '
+            res_a = try; include(first(filter(f -> endswith(f, "golden_search.jl"), vcat(readdir(".", join=true), [joinpath(r, f) for (r, d, files) in walkdir(".") for f in files])))); xm, fm, eb = golden_search(x -> -(x-3)^2+10, 0.0, 5.0, 10); abs(xm - 3.0) < 0.1 ? "Pass" : "Wrong result"; catch e; "Function error"; end
+            open("p1_a", "w") do f write(f, res_a) end
+            res_b = try; include(first(filter(f -> endswith(f, "freq_response.jl"), vcat(readdir(".", join=true), [joinpath(r, f) for (r, d, files) in walkdir(".") for f in files])))); W_EXPECTED = eval(Meta.parse(get(ENV, "W_EXP", ""))); if !@isdefined(W_max); "W_max missing"; elseif length(W_max) != 10; "Size mismatch"; elseif all(abs.(vec(W_max) .- vec(W_EXPECTED)) .< 0.1); "Pass"; else; "Values incorrect"; end; catch; "Script failed"; end
+            open("p1_b", "w") do f write(f, res_b) end
+            '
+          fi
+
+      # ==========================================
+      # PROBLEM 2: STEEPEST ASCENT
+      # ==========================================
+      - name: Run Problem 2
+        continue-on-error: true
+        env:
+          EXP_X: "[0.3726, 0.7463, 0.3350]"
+          EXP_Y: "3.3030"
+        run: |
+          if [ "${{ steps.setup.outputs.lang }}" == "py" ]; then
+            python -c "
+          import sys, numpy as np, os
+          for r, d, f in os.walk('.'): sys.path.append(r)
+          try:
+              from steepest_ascent import steepest_ascent
+              xm, fm = steepest_ascent(lambda x: 10-(x[0]-1)**2-(x[1]-2)**2, lambda x: np.array([-2*(x[0]-1), -2*(x[1]-2)]), [0,0], 1.0, 0.001, 100)
+              open('p2_a', 'w').write('Pass' if np.allclose(xm, [1.0, 2.0], atol=0.2) else 'Failed to converge')
+          except Exception as e: open('p2_a', 'w').write(f'Function error: {type(e).__name__}')
+          try:
+              import SA_driver as sd
+              EXPECTED_X = np.array(eval(os.environ['EXP_X']))
+              EXPECTED_Y = float(os.environ['EXP_Y'])
+              if not hasattr(sd, 'x_max') or not hasattr(sd, 'y_max'): open('p2_b', 'w').write('x_max or y_max missing')
+              elif not np.allclose(np.array(sd.x_max).flatten(), EXPECTED_X, atol=0.1): open('p2_b', 'w').write('x_max values incorrect')
+              elif abs(sd.y_max - EXPECTED_Y) > 0.1: open('p2_b', 'w').write('y_max value incorrect')
+              else: open('p2_b', 'w').write('Pass')
+          except Exception as e: open('p2_b', 'w').write(f'Script error: {type(e).__name__}')
+          "
+          elif [ "${{ steps.setup.outputs.lang }}" == "m" ]; then
+            cat << 'EOF' > grade_p2.m
+            try
+              addpath(genpath('.'));
+              [xm, fm] = steepest_ascent(@(x) 10-(x(1)-1)^2-(x(2)-2)^2, @(x) [-2*(x(1)-1); -2*(x(2)-2)], [0;0], 1.0, 0.001, 100);
+              if all(abs(xm(:)' - [1, 2]) < 0.2); resA = 'Pass'; else; resA = 'Failed to converge'; end
+            catch err; resA = ['Error: ', err.message]; end
+            f=fopen('p2_a','w'); fprintf(f,'%s',resA); fclose(f);
+
+            try
+              addpath(genpath('.'));
+              SA_driver;
+              EXPECTED_X = str2num(getenv('EXP_X'));
+              EXPECTED_Y = str2num(getenv('EXP_Y'));
+              if ~exist('x_max','var') || ~exist('y_max','var'); resB = 'Variables missing';
+              elseif ~all(abs(x_max(:)' - EXPECTED_X) < 0.1); resB = 'x_max incorrect';
+              elseif abs(y_max - EXPECTED_Y) > 0.1; resB = 'y_max incorrect';
+              else; resB = 'Pass'; end
+            catch err; resB = ['Error: ', err.message]; end
+            f=fopen('p2_b','w'); fprintf(f,'%s',resB); fclose(f);
+          EOF
+            octave --no-gui grade_p2.m || { echo "Octave system crash" > p2_a; echo "Octave system crash" > p2_b; }
+          elif [ "${{ steps.setup.outputs.lang }}" == "jl" ]; then
+            julia -e '
+            res_a = try; include(first(filter(f -> endswith(f, "steepest_ascent.jl"), vcat(readdir(".", join=true), [joinpath(r, f) for (r, d, files) in walkdir(".") for f in files])))); xm,fm=steepest_ascent(x->10-(x[1]-1)^2-(x[2]-2)^2, x->[-2*(x[1]-1), -2*(x[2]-2)], [0.0, 0.0], 1.0, 0.001, 100); all(abs.(xm.-[1.0,2.0]).<0.2) ? "Pass" : "Failed to converge"; catch; "Function error"; end
+            open("p2_a","w") do f write(f,res_a) end
+            res_b = try; include(first(filter(f -> endswith(f, "SA_driver.jl"), vcat(readdir(".", join=true), [joinpath(r, f) for (r, d, files) in walkdir(".") for f in files])))); EXPECTED_X=eval(Meta.parse(get(ENV,"EXP_X",""))); EXPECTED_Y=parse(Float64,get(ENV,"EXP_Y","0")); if !@isdefined(x_max) || !@isdefined(y_max); "Variables missing"; elseif !all(abs.(vec(x_max).-vec(EXPECTED_X)).<0.1); "x_max incorrect"; elseif abs(y_max-EXPECTED_Y)>0.1; "y_max incorrect"; else; "Pass"; end; catch; "Script crashed"; end
+            open("p2_b","w") do f write(f,res_b) end
+            '
+          fi
+
+      # ==========================================
+      # PROBLEM 3: INTEGRATION
+      # ==========================================
+      - name: Run Problem 3
+        continue-on-error: true
+        env:
+          EXP_T: "[22.5105, 23.0482, 23.6187, 24.2257, 24.8732, 25.5663, 26.3105, 27.1127, 27.9812, 28.9261, 29.9597, 31.0977, 32.3598, 33.7718, 35.3683, 37.1965, 39.3236, 41.8498, 44.9336, 48.8471, 54.1177]"
+        run: |
+          if [ "${{ steps.setup.outputs.lang }}" == "py" ]; then
+            python -c "
+          import sys, numpy as np, os
+          for r, d, f in os.walk('.'): sys.path.append(r)
+          try:
+              from trapezoider import trapezoider
+              val = trapezoider(np.sin, 0, np.pi, 100)
+              open('p3_a', 'w').write('Pass' if abs(val-2.0)<0.1 else f'Integral wrong: {val:.2f}')
+          except Exception as e: open('p3_a', 'w').write(f'Function error: {type(e).__name__}')
+          try:
+              import droplet_radiation as dr
+              EXPECTED_T = np.array(eval(os.environ['EXP_T']))
+              if not hasattr(dr, 't_cool'): open('p3_b', 'w').write('Variable t_cool missing')
+              else:
+                  student = np.array(dr.t_cool).flatten()
+                  if len(student) != 21: open('p3_b', 'w').write(f'Size mismatch: got {len(student)}')
+                  elif np.allclose(student, EXPECTED_T, atol=0.2): open('p3_b', 'w').write('Pass')
+                  else: open('p3_b', 'w').write('Values incorrect (Check c or N)')
+          except Exception as e: open('p3_b', 'w').write(f'Script Error: {type(e).__name__}')
+          "
+          elif [ "${{ steps.setup.outputs.lang }}" == "m" ]; then
+            cat << 'EOF' > grade_p3.m
+            try
+              addpath(genpath('.'));
+              val = trapezoider(@sin,0,pi,100);
+              if abs(val-2) < 0.1; resA = 'Pass'; else; resA = 'Wrong result'; end
+            catch err; resA = ['Error: ', err.message]; end
+            f=fopen('p3_a','w'); fprintf(f,'%s',resA); fclose(f);
+
+            try
+              addpath(genpath('.'));
+              droplet_radiation;
+              EXPECTED_T = str2num(getenv('EXP_T'));
+              if ~exist('t_cool','var'); resB = 't_cool not found';
+              elseif length(t_cool) ~= 21; resB = 't_cool size mismatch';
+              elseif all(abs(t_cool(:)' - EXPECTED_T) < 0.2); resB = 'Pass';
+              else; resB = 'Values incorrect'; end
+            catch err; resB = ['Error: ', err.message]; end
+            f=fopen('p3_b','w'); fprintf(f,'%s',resB); fclose(f);
+          EOF
+            octave --no-gui grade_p3.m || { echo "Octave system crash" > p3_a; echo "Octave system crash" > p3_b; }
+          elif [ "${{ steps.setup.outputs.lang }}" == "jl" ]; then
+            julia -e '
+            res_a = try; include(first(filter(f -> endswith(f, "trapezoider.jl"), vcat(readdir(".", join=true), [joinpath(r, f) for (r, d, files) in walkdir(".") for f in files])))); val = trapezoider(sin, 0.0, pi, 100); abs(val-2.0)<0.1 ? "Pass" : "Wrong result"; catch; "Function error"; end
+            open("p3_a","w") do f write(f,res_a) end
+            res_b = try; include(first(filter(f -> endswith(f, "droplet_radiation.jl"), vcat(readdir(".", join=true), [joinpath(r, f) for (r, d, files) in walkdir(".") for f in files])))); EXPECTED_T = eval(Meta.parse(get(ENV, "EXP_T", ""))); if !@isdefined(t_cool); "t_cool not found"; elseif length(t_cool) != 21; "Size mismatch"; elseif all(abs.(vec(t_cool) .- vec(EXPECTED_T)) .< 0.2); "Pass"; else; "Values incorrect"; end; catch; "Script crashed"; end
+            open("p3_b","w") do f write(f,res_b) end
+            '
+          fi
+
+      # ==========================================
+      # FINAL REPORT
+      # ==========================================
+      - name: Print Results
+        if: always()
+        run: |
+          P1A=$(cat p1_a 2>/dev/null || echo "Not Run (Check Language)")
+          P1B=$(cat p1_b 2>/dev/null || echo "Not Run (Check Language)")
+          P2A=$(cat p2_a 2>/dev/null || echo "Not Run (Check Language)")
+          P2B=$(cat p2_b 2>/dev/null || echo "Not Run (Check Language)")
+          P3A=$(cat p3_a 2>/dev/null || echo "Not Run (Check Language)")
+          P3B=$(cat p3_b 2>/dev/null || echo "Not Run (Check Language)")
+          
+          echo "## Autograder Feedback" >> $GITHUB_STEP_SUMMARY
+          echo "| Problem | Part A | Part B |" >> $GITHUB_STEP_SUMMARY
+          echo "|---|---|---|" >> $GITHUB_STEP_SUMMARY
+          echo "| 1 | $P1A | $P1B |" >> $GITHUB_STEP_SUMMARY
+          echo "| 2 | $P2A | $P2B |" >> $GITHUB_STEP_SUMMARY
+          echo "| 3 | $P3A | $P3B |" >> $GITHUB_STEP_SUMMARY
+
+          echo "GRADER_DATA_EXPORT | P1A:$P1A | P1B:$P1B | P2A:$P2A | P2B:$P2B | P3A:$P3A | P3B:$P3B"
+          
+          if [ "$P1A" != "Pass" ] || [ "$P1B" != "Pass" ] || [ "$P2A" != "Pass" ] || [ "$P2B" != "Pass" ] || [ "$P3A" != "Pass" ] || [ "$P3B" != "Pass" ]; then exit 1; fi
